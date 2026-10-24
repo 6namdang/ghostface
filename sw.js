@@ -1,11 +1,18 @@
 // Service Worker for FaceHelper PWA
-const CACHE_NAME = 'facehelper-cache-v3';
+// Bump the version whenever cached files change so clients pick up updates.
+const CACHE_NAME = 'facehelper-cache-v4';
+
+// Only same-origin files are precached. cache.addAll() fails as a whole if any
+// one URL fails, so a CDN hiccup must not stop the worker from installing.
+// Face-api and its models are cached on first use by the fetch handler below.
 const APP_SHELL = [
     '/',
     '/index.html',
     '/app.js',
     '/manifest.json',
-    'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.12/dist/face-api.js'
+    '/icons/icon-192.png',
+    '/icons/icon-512.png',
+    '/icons/apple-touch-icon.png'
 ];
 
 self.addEventListener('install', (event) => {
@@ -65,10 +72,14 @@ async function cacheFirst(request) {
     const cached = await caches.match(request);
     if (cached) return cached;
 
-    const response = await fetch(request);
-    if (response.ok) {
-        const cache = await caches.open(CACHE_NAME);
-        await cache.put(request, response.clone());
+    try {
+        const response = await fetch(request);
+        if (response.ok) {
+            const cache = await caches.open(CACHE_NAME);
+            await cache.put(request, response.clone());
+        }
+        return response;
+    } catch (error) {
+        return Response.error();
     }
-    return response;
 }
