@@ -15,6 +15,12 @@ let ttsEnabled = false;
 let lastSpokenKey = '';
 let lastFaceSeenAt = 0;
 let currentMode = 'recognize';
+let modelsReady = false;
+let databaseReady = false;
+let toastTimer = null;
+let activeModalTrigger = null;
+let cameraRequestId = 0;
+let enrollCameraRequestId = 0;
 
 // Enrollment State
 let enrollmentPhotos = [];
@@ -37,22 +43,104 @@ let currentDeletePerson = null;
 // ============================================
 
 async function init() {
-    updateLoadingProgress('Initializing database...');
-    await initDB();
-    
-    updateLoadingProgress('Loading face detection models...');
-    await loadModels();
-    
-    updateLoadingProgress('Ready!');
-    setTimeout(() => {
-        document.getElementById('loading-screen').style.display = 'none';
-        document.getElementById('app').classList.remove('hidden');
-        updateGallery();
-    }, 500);
+    setModelState('loading', 'AI starting');
+    setModelControlsReady(false);
+    updateLoadingProgress('Opening your private library…');
+    revealApp();
+
+    const storageTask = initializeStorage();
+    const modelTask = (async () => {
+        await registerServiceWorker();
+        return loadModels();
+    })();
+
+    const [, modelResult] = await Promise.all([storageTask, modelTask]);
+    modelsReady = modelResult;
+    const operational = modelsReady && databaseReady;
+    const modelLabel = !databaseReady ? 'Storage unavailable' : modelsReady ? 'AI ready' : 'AI unavailable';
+    setModelState(operational ? 'ready' : 'error', modelLabel);
+    setModelControlsReady(operational);
+    updatePhotoCount();
+}
+
+async function initializeStorage() {
+    try {
+        await initDB();
+        databaseReady = true;
+        await updateGallery();
+    } catch (error) {
+        console.error('Database initialization failed:', error);
+        showToast('Local storage could not be opened. Check browser privacy settings.');
+    }
+}
+
+async function registerServiceWorker() {
+    if (!('serviceWorker' in navigator) || !['http:', 'https:'].includes(window.location.protocol)) return false;
+
+    try {
+        const registration = await navigator.serviceWorker.register('/sw.js');
+        const installingWorker = registration.installing || registration.waiting;
+        if (installingWorker && installingWorker.state !== 'activated') {
+            await Promise.race([
+                new Promise((resolve) => {
+                    installingWorker.addEventListener('statechange', () => {
+                        if (['activated', 'redundant'].includes(installingWorker.state)) resolve();
+                    });
+                }),
+                new Promise((resolve) => setTimeout(resolve, 5000))
+            ]);
+        }
+
+        // On the first visit, wait for clients.claim() so face-api and its model
+        // requests pass through the stable runtime model cache.
+        await Promise.race([
+            navigator.serviceWorker.ready,
+            new Promise((resolve) => setTimeout(resolve, 5000))
+        ]);
+        if (!navigator.serviceWorker.controller) {
+            await Promise.race([
+                new Promise((resolve) => navigator.serviceWorker.addEventListener('controllerchange', resolve, { once: true })),
+                new Promise((resolve) => setTimeout(resolve, 2000))
+            ]);
+        }
+        return Boolean(navigator.serviceWorker.controller);
+    } catch (error) {
+        console.error('Service worker registration failed:', error);
+        return false;
+    }
+}
+
+function revealApp() {
+    const loadingScreen = document.getElementById('loading-screen');
+    document.getElementById('app').classList.remove('hidden');
+    loadingScreen.classList.add('is-hidden');
+    loadingScreen.setAttribute('aria-hidden', 'true');
+    setTimeout(() => { loadingScreen.hidden = true; }, 240);
 }
 
 function updateLoadingProgress(message) {
     document.getElementById('loading-progress').textContent = message;
+}
+
+function setModelState(state, label) {
+    const status = document.getElementById('model-status');
+    const statusLabel = document.getElementById('model-status-label');
+    if (!status || !statusLabel) return;
+    status.dataset.state = state;
+    statusLabel.textContent = label;
+}
+
+function setModelControlsReady(ready) {
+    const cameraButton = document.getElementById('recognition-camera-btn');
+    if (cameraButton) cameraButton.disabled = !ready;
+    setEnrollmentBusy(false);
+}
+
+function setButtonLabel(button, text) {
+    if (!button) return;
+    const label = button.querySelector(':scope > span:not(.button-icon):not(.toggle-switch)');
+    if (label) label.textContent = text;
+    else button.textContent = text;
 }
 
 // ============================================
@@ -128,19 +216,36 @@ function deleteFromDB(id) {
 // Model Loading
 // ============================================
 
+async function loadFaceApiLibrary() {
+    if (typeof faceapi !== 'undefined') return;
+
+    await new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.12/dist/face-api.js';
+        script.async = true;
+        script.crossOrigin = 'anonymous';
+        script.onload = resolve;
+        script.onerror = () => reject(new Error('Face recognition library did not load'));
+        document.head.append(script);
+    });
+}
+
 async function loadModels() {
     const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.12/model';
-    
+
     try {
+        await loadFaceApiLibrary();
         await Promise.all([
             faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
             faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
             faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
         ]);
         console.log('Models loaded successfully');
+        return true;
     } catch (error) {
         console.error('Error loading models:', error);
-        showToast('Failed to load models. Please refresh.');
+        showToast('Face recognition could not start. Check your connection and reload.');
+        return false;
     }
 }
 
@@ -149,8 +254,9 @@ async function loadModels() {
 // ============================================
 
 async function startCamera() {
+    const requestId = ++cameraRequestId;
     try {
-        stream = await navigator.mediaDevices.getUserMedia({
+        const cameraStream = await navigator.mediaDevices.getUserMedia({
             video: {
                 facingMode: 'user',
                 width: { ideal: 960 },
@@ -159,6 +265,11 @@ async function startCamera() {
             audio: false
         });
 
+        if (requestId !== cameraRequestId || currentMode !== 'recognize') {
+            cameraStream.getTracks().forEach((track) => track.stop());
+            return false;
+        }
+        stream = cameraStream;
         video = document.getElementById('video');
         video.srcObject = stream;
         await waitForVideo(video);
@@ -197,6 +308,11 @@ async function stopCamera(targetStream = stream) {
 }
 
 async function toggleCamera() {
+    if (!modelsReady) {
+        showToast('Face recognition is still starting. Please wait a moment.');
+        return;
+    }
+
     const cameraButton = document.getElementById('recognition-camera-btn');
     cameraButton.disabled = true;
 
@@ -208,7 +324,7 @@ async function toggleCamera() {
         return;
     }
 
-    cameraButton.textContent = 'Opening camera…';
+    setButtonLabel(cameraButton, 'Opening camera…');
     updateRecognitionResult('searching', 'Starting camera', 'Waiting for camera permission.');
     const started = await startCamera();
 
@@ -222,7 +338,7 @@ async function toggleCamera() {
     document.getElementById('recognition-camera').classList.remove('camera-off');
     document.getElementById('recognition-placeholder').classList.add('hidden');
     document.getElementById('camera-live-badge').classList.remove('hidden');
-    cameraButton.textContent = 'Stop camera';
+    setButtonLabel(cameraButton, 'Stop camera');
     cameraButton.disabled = false;
     await startRecognition();
 }
@@ -233,7 +349,7 @@ function showRecognitionCameraOff() {
     cameraContainer.style.removeProperty('aspect-ratio');
     document.getElementById('recognition-placeholder').classList.remove('hidden');
     document.getElementById('camera-live-badge').classList.add('hidden');
-    document.getElementById('recognition-camera-btn').textContent = 'Start camera';
+    setButtonLabel(document.getElementById('recognition-camera-btn'), 'Start camera');
     updateRecognitionResult('idle', 'Camera is off', 'Start the camera to begin recognizing faces.');
     if (ctx && canvas) ctx.clearRect(0, 0, canvas.width, canvas.height);
 }
@@ -248,38 +364,42 @@ function updateCameraStatus(active) {
 // ============================================
 
 function switchMode(mode) {
+    if (!['recognize', 'enroll', 'gallery'].includes(mode)) return;
     currentMode = mode;
-    
-    // Update buttons
-    document.querySelectorAll('.mode-toggle button').forEach(btn => btn.classList.remove('active'));
-    document.getElementById(`btn-${mode}`).classList.add('active');
-    
-    // Hide all modes
-    document.getElementById('recognize-mode').classList.add('hidden');
-    document.getElementById('enroll-mode').classList.add('hidden');
-    document.getElementById('gallery-mode').classList.add('hidden');
-    
-    // Show selected mode
-    document.getElementById(`${mode}-mode`).classList.remove('hidden');
-    
-    // Only one camera stream should be active at a time. Releasing the
-    // recognition camera here prevents a blank enrollment preview on mobile.
-    if (mode !== 'recognize' && stream) {
-        stopRecognition();
-        stopCamera();
-        showRecognitionCameraOff();
-    }
-    
-    if (mode !== 'enroll') {
-        closeEnrollCamera();
+
+    document.querySelectorAll('.mode-toggle button').forEach((button) => {
+        const selected = button.dataset.mode === mode;
+        button.classList.toggle('active', selected);
+        if (selected) button.setAttribute('aria-current', 'page');
+        else button.removeAttribute('aria-current');
+    });
+
+    ['recognize', 'enroll', 'gallery'].forEach((name) => {
+        document.getElementById(`${name}-mode`).classList.toggle('hidden', name !== mode);
+    });
+
+    // Only one camera stream should be active at a time.
+    if (mode !== 'recognize') {
+        cameraRequestId += 1;
+        if (stream) {
+            stopRecognition();
+            stopCamera();
+            showRecognitionCameraOff();
+        }
     }
 
-    // Handle mode-specific logic
-    if (mode === 'enroll') {
-        startEnrollmentMode();
-    } else if (mode === 'gallery') {
-        updateGallery();
-    }
+    if (mode !== 'enroll') closeEnrollCamera();
+
+    if (mode === 'enroll') startEnrollmentMode();
+    else if (mode === 'gallery') updateGallery();
+
+    const titles = {
+        recognize: 'Recognize — FaceHelper',
+        enroll: 'Add a person — FaceHelper',
+        gallery: 'Your people — FaceHelper'
+    };
+    document.title = titles[mode];
+    window.scrollTo({ top: 0, behavior: 'auto' });
 }
 
 // ============================================
@@ -409,8 +529,14 @@ function updateRecognitionResult(state, title, detail) {
         error: 'Problem'
     };
 
+    const nextLabel = labels[state] || 'Status';
+    if (card.dataset.state === state
+        && label.textContent === nextLabel
+        && titleElement.textContent === title
+        && detailElement.textContent === detail) return;
+
     card.dataset.state = state;
-    label.textContent = labels[state] || 'Status';
+    label.textContent = nextLabel;
     titleElement.textContent = title;
     detailElement.textContent = detail;
 }
@@ -503,7 +629,12 @@ function startEnrollmentMode() {
 }
 
 async function openEnrollCamera() {
+    if (!modelsReady) {
+        setEnrollmentMessage('Face recognition is still starting. Please wait a moment.', 'error');
+        return;
+    }
     if (enrollStream || isCapturing || isProcessingUploads) return;
+    const requestId = ++enrollCameraRequestId;
 
     const panel = document.getElementById('camera-panel');
     const placeholder = document.getElementById('camera-placeholder');
@@ -522,7 +653,7 @@ async function openEnrollCamera() {
             showRecognitionCameraOff();
         }
 
-        enrollStream = await navigator.mediaDevices.getUserMedia({
+        const cameraStream = await navigator.mediaDevices.getUserMedia({
             video: {
                 facingMode: 'user',
                 width: { ideal: 960 },
@@ -531,6 +662,11 @@ async function openEnrollCamera() {
             audio: false
         });
 
+        if (requestId !== enrollCameraRequestId || currentMode !== 'enroll') {
+            cameraStream.getTracks().forEach((track) => track.stop());
+            return;
+        }
+        enrollStream = cameraStream;
         enrollVideo = document.getElementById('enroll-video');
         enrollVideo.srcObject = enrollStream;
         await waitForVideo(enrollVideo);
@@ -561,6 +697,7 @@ function waitForVideo(videoElement) {
 }
 
 function closeEnrollCamera() {
+    enrollCameraRequestId += 1;
     if (enrollStream) {
         enrollStream.getTracks().forEach(track => track.stop());
         enrollStream = null;
@@ -581,6 +718,11 @@ function openPhotoPicker() {
 }
 
 async function handlePhotoUpload(event) {
+    if (!modelsReady) {
+        setEnrollmentMessage('Face recognition is still starting. Please wait a moment.', 'error');
+        event.target.value = '';
+        return;
+    }
     const input = event.target;
     const remaining = 20 - enrollmentDescriptors.length;
     const files = Array.from(input.files || []).slice(0, remaining);
@@ -749,12 +891,27 @@ function renderEnrollmentPhotos() {
     if (!section || !grid) return;
 
     section.classList.toggle('hidden', enrollmentPhotos.length === 0);
-    grid.innerHTML = enrollmentPhotos.map((photo, index) => `
-        <div class="accepted-photo">
-            <img src="${photo}" alt="Added photo ${index + 1}">
-            <button type="button" class="remove-photo" onclick="removeEnrollmentPhoto(${index})" aria-label="Remove photo ${index + 1}">×</button>
-        </div>
-    `).join('');
+    grid.replaceChildren();
+
+    enrollmentPhotos.forEach((photo, index) => {
+        const item = document.createElement('div');
+        item.className = 'accepted-photo';
+
+        const image = document.createElement('img');
+        image.src = photo;
+        image.alt = `Added photo ${index + 1}`;
+        image.decoding = 'async';
+
+        const removeButton = document.createElement('button');
+        removeButton.type = 'button';
+        removeButton.className = 'remove-photo';
+        removeButton.setAttribute('aria-label', `Remove photo ${index + 1}`);
+        removeButton.textContent = '×';
+        removeButton.addEventListener('click', () => removeEnrollmentPhoto(index));
+
+        item.append(image, removeButton);
+        grid.append(item);
+    });
 }
 
 function setEnrollmentMessage(message, type) {
@@ -769,9 +926,10 @@ function setEnrollmentMessage(message, type) {
 function setEnrollmentBusy(isBusy) {
     const atLimit = enrollmentDescriptors.length >= 20;
     document.querySelectorAll('.source-option').forEach(button => {
-        button.disabled = isBusy || atLimit;
+        button.disabled = !modelsReady || isBusy || atLimit;
     });
     updateEnrollmentControls();
+    updatePhotoCount();
 }
 
 function updateEnrollmentControls() {
@@ -780,8 +938,8 @@ function updateEnrollmentControls() {
 
     const busy = isCapturing || isProcessingUploads;
     const atLimit = enrollmentDescriptors.length >= 20;
-    captureButton.disabled = busy || atLimit || !enrollStream;
-    captureButton.textContent = isCapturing ? 'Adding photo…' : 'Take photo';
+    captureButton.disabled = !modelsReady || busy || atLimit || !enrollStream;
+    setButtonLabel(captureButton, isCapturing ? 'Adding photo…' : 'Take photo');
 }
 
 function triggerCaptureFlash() {
@@ -794,26 +952,66 @@ function triggerCaptureFlash() {
 
 function updatePhotoCount() {
     const count = enrollmentPhotos.length;
-    document.getElementById('photo-count').textContent = count;
-    document.getElementById('photo-progress').style.width = `${Math.min(100, (count / 3) * 100)}%`;
+    const photoCount = document.getElementById('photo-count');
+    const progress = document.getElementById('photo-progress');
+    const progressTrack = document.getElementById('photo-progress-track');
+    const acceptedCount = document.getElementById('accepted-photo-count');
+    if (photoCount) photoCount.textContent = count;
+    if (acceptedCount) acceptedCount.textContent = count;
+    if (progress) progress.style.width = `${Math.min(100, (count / 3) * 100)}%`;
+    if (progressTrack) progressTrack.setAttribute('aria-valuenow', String(Math.min(3, count)));
     document.getElementById('photo-guidance').textContent = count >= 3
         ? 'Ready to save. More varied photos can improve recognition.'
         : `Add ${3 - count} more photo${3 - count === 1 ? '' : 's'} to continue.`;
-    
+
     const saveBtn = document.getElementById('save-person-btn');
     const nameInput = document.getElementById('person-name');
-    saveBtn.disabled = enrollmentDescriptors.length < 3 || !nameInput.value.trim();
+    if (saveBtn && nameInput) {
+        saveBtn.disabled = !databaseReady || isCapturing || isProcessingUploads || enrollmentDescriptors.length < 3 || !nameInput.value.trim();
+    }
 }
 
-// Enable save button when name is entered
-document.addEventListener('DOMContentLoaded', () => {
-    const nameInput = document.getElementById('person-name');
-    if (nameInput) {
-        nameInput.addEventListener('input', updatePhotoCount);
-    }
-});
+function setupUIEvents() {
+    document.querySelectorAll('.mode-toggle [data-mode]').forEach((button) => {
+        button.addEventListener('click', () => switchMode(button.dataset.mode));
+    });
+
+    document.getElementById('recognition-camera-btn').addEventListener('click', toggleCamera);
+    document.getElementById('audio-toggle-btn').addEventListener('click', toggleTTS);
+    document.getElementById('open-camera-btn').addEventListener('click', openEnrollCamera);
+    document.getElementById('open-upload-btn').addEventListener('click', openPhotoPicker);
+    document.getElementById('photo-upload').addEventListener('change', handlePhotoUpload);
+    document.getElementById('close-enroll-camera-btn').addEventListener('click', closeEnrollCamera);
+    document.getElementById('capture-btn').addEventListener('click', capturePhoto);
+    document.getElementById('save-person-btn').addEventListener('click', savePerson);
+    document.getElementById('gallery-add-btn').addEventListener('click', () => switchMode('enroll'));
+    document.getElementById('person-name').addEventListener('input', updatePhotoCount);
+
+    document.getElementById('edit-close-btn').addEventListener('click', closeEditModal);
+    document.getElementById('edit-cancel-btn').addEventListener('click', closeEditModal);
+    document.getElementById('edit-save-btn').addEventListener('click', updatePerson);
+    document.getElementById('delete-close-btn').addEventListener('click', closeDeleteModal);
+    document.getElementById('delete-cancel-btn').addEventListener('click', closeDeleteModal);
+    document.getElementById('delete-confirm-btn').addEventListener('click', confirmDelete);
+
+    document.querySelectorAll('.modal-overlay').forEach((overlay) => {
+        overlay.addEventListener('click', (event) => {
+            if (event.target !== overlay) return;
+            if (overlay.id === 'edit-modal') closeEditModal();
+            else closeDeleteModal();
+        });
+    });
+
+    document.getElementById('edit-name').addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') updatePerson();
+    });
+    document.addEventListener('keydown', handleDialogKeydown);
+}
+
+document.addEventListener('DOMContentLoaded', setupUIEvents);
 
 async function savePerson() {
+    if (!databaseReady || isCapturing || isProcessingUploads) return;
     const name = document.getElementById('person-name').value.trim();
     
     if (!name) {
@@ -857,70 +1055,162 @@ async function savePerson() {
 // ============================================
 
 async function updateGallery() {
-    const people = await getAllFromDB();
     const galleryContent = document.getElementById('gallery-content');
-    
-    if (people.length === 0) {
-        galleryContent.innerHTML = `
-            <div class="empty-state">
-                <svg viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
-                </svg>
-                <h3>No People Enrolled</h3>
-                <p>Add people to get started with face recognition</p>
-                <button class="btn btn-primary" onclick="switchMode('enroll')" style="max-width: 300px;">
-                    ➕ Add Your First Person
-                </button>
-            </div>
-        `;
-        return;
+    const galleryCount = document.getElementById('gallery-count');
+    if (!galleryContent || !databaseReady) return;
+
+    try {
+        const people = await getAllFromDB();
+        if (galleryCount) galleryCount.textContent = people.length;
+        galleryContent.replaceChildren();
+
+        if (people.length === 0) {
+            galleryContent.append(createEmptyGallery());
+            return;
+        }
+
+        const grid = document.createElement('div');
+        grid.className = 'gallery-grid';
+        people
+            .slice()
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .forEach((person) => grid.append(createPersonCard(person)));
+        galleryContent.append(grid);
+    } catch (error) {
+        console.error('Gallery load error:', error);
+        showToast('Could not load people stored on this device.');
     }
-    
-    let html = '<div class="gallery-grid">';
-    
-    people.forEach(person => {
-        const initials = person.name.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
-        html += `
-            <div class="person-card" onclick="viewPerson(${person.id})">
-                <div class="person-avatar">${initials}</div>
-                <h3>${person.name}</h3>
-                <p>${person.photoCount} photos</p>
-                <div class="person-actions">
-                    <button class="edit-btn" onclick="event.stopPropagation(); editPerson(${person.id})">Edit</button>
-                    <button class="delete-btn" onclick="event.stopPropagation(); deletePerson(${person.id}, '${person.name}')">Delete</button>
-                </div>
-            </div>
-        `;
-    });
-    
-    html += '</div>';
-    galleryContent.innerHTML = html;
 }
 
-function viewPerson(id) {
-    // Could show detailed view
-    console.log('View person:', id);
+function createEmptyGallery() {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+
+    const icon = document.createElement('span');
+    icon.className = 'empty-state-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.innerHTML = '<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="4"/><path d="M3 21v-2a6 6 0 0 1 12 0v2M19 8v6M16 11h6"/></svg>';
+
+    const title = document.createElement('h2');
+    title.textContent = 'Build your people library';
+    const copy = document.createElement('p');
+    copy.textContent = 'Add someone with a few clear photos. Their recognition profile stays private on this device.';
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'btn btn-primary';
+    button.textContent = 'Add your first person';
+    button.addEventListener('click', () => switchMode('enroll'));
+
+    empty.append(icon, title, copy, button);
+    return empty;
+}
+
+function createPersonCard(person) {
+    const card = document.createElement('article');
+    card.className = 'person-card';
+    card.dataset.personId = String(person.id);
+
+    const head = document.createElement('div');
+    head.className = 'person-card-head';
+    const avatar = document.createElement('div');
+    avatar.className = 'person-avatar';
+    avatar.setAttribute('aria-hidden', 'true');
+    avatar.textContent = person.name.split(/\s+/).filter(Boolean).map((part) => part[0]).join('').toUpperCase().slice(0, 2) || '?';
+
+    const details = document.createElement('div');
+    details.className = 'person-details';
+    const title = document.createElement('h3');
+    title.textContent = person.name;
+    const metadata = document.createElement('p');
+    metadata.textContent = `${person.photoCount} face sample${person.photoCount === 1 ? '' : 's'}`;
+    details.append(title, metadata);
+    head.append(avatar, details);
+
+    const actions = document.createElement('div');
+    actions.className = 'person-actions';
+    const editButton = document.createElement('button');
+    editButton.type = 'button';
+    editButton.className = 'edit-btn';
+    editButton.textContent = 'Edit name';
+    editButton.addEventListener('click', () => editPerson(person.id));
+
+    const deleteButton = document.createElement('button');
+    deleteButton.type = 'button';
+    deleteButton.className = 'delete-btn';
+    deleteButton.setAttribute('aria-label', `Delete ${person.name}`);
+    deleteButton.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M9 7l1-3h4l1 3M6 7l1 14h10l1-14"/></svg>';
+    deleteButton.addEventListener('click', () => deletePerson(person.id, person.name));
+
+    actions.append(editButton, deleteButton);
+    card.append(head, actions);
+    return card;
 }
 
 // ============================================
 // Edit Person
 // ============================================
 
+function openModal(id, focusTargetId) {
+    const overlay = document.getElementById(id);
+    activeModalTrigger = document.activeElement;
+    overlay.classList.add('active');
+    overlay.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('modal-open');
+    requestAnimationFrame(() => {
+        const target = document.getElementById(focusTargetId) || overlay.querySelector('.modal');
+        target.focus();
+        if (target instanceof HTMLInputElement) target.select();
+    });
+}
+
+function closeModal(id, restoreFocus = true) {
+    const overlay = document.getElementById(id);
+    overlay.classList.remove('active');
+    overlay.setAttribute('aria-hidden', 'true');
+    document.body.classList.remove('modal-open');
+    if (restoreFocus && activeModalTrigger instanceof HTMLElement) activeModalTrigger.focus();
+    activeModalTrigger = null;
+}
+
+function handleDialogKeydown(event) {
+    const overlay = document.querySelector('.modal-overlay.active');
+    if (!overlay) return;
+
+    if (event.key === 'Escape') {
+        if (overlay.id === 'edit-modal') closeEditModal();
+        else closeDeleteModal();
+        return;
+    }
+
+    if (event.key !== 'Tab') return;
+    const focusable = Array.from(overlay.querySelectorAll('button:not(:disabled), input:not(:disabled), [tabindex="0"]'));
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+    }
+}
+
 async function editPerson(id) {
     const people = await getAllFromDB();
-    currentEditPerson = people.find(p => p.id === id);
-    
+    currentEditPerson = people.find((person) => person.id === id);
+
     if (!currentEditPerson) {
         showToast('Person not found');
         return;
     }
-    
+
     document.getElementById('edit-name').value = currentEditPerson.name;
-    document.getElementById('edit-modal').classList.add('active');
+    openModal('edit-modal', 'edit-name');
 }
 
-function closeEditModal() {
-    document.getElementById('edit-modal').classList.remove('active');
+function closeEditModal(restoreFocus = true) {
+    if (document.getElementById('edit-modal').classList.contains('active')) closeModal('edit-modal', restoreFocus);
     currentEditPerson = null;
 }
 
@@ -935,11 +1225,14 @@ async function updatePerson() {
     }
     
     try {
+        const personId = currentEditPerson.id;
         currentEditPerson.name = newName;
         await updateInDB(currentEditPerson);
+        closeEditModal(false);
+        await updateGallery();
+        const replacement = document.querySelector(`.person-card[data-person-id="${personId}"] .edit-btn`);
+        (replacement || document.getElementById('gallery-add-btn')).focus();
         showToast('Person updated successfully');
-        closeEditModal();
-        updateGallery();
     } catch (error) {
         console.error('Update error:', error);
         showToast('Failed to update person');
@@ -953,11 +1246,11 @@ async function updatePerson() {
 function deletePerson(id, name) {
     currentDeletePerson = id;
     document.getElementById('delete-person-name').textContent = name;
-    document.getElementById('delete-modal').classList.add('active');
+    openModal('delete-modal', 'delete-cancel-btn');
 }
 
-function closeDeleteModal() {
-    document.getElementById('delete-modal').classList.remove('active');
+function closeDeleteModal(restoreFocus = true) {
+    if (document.getElementById('delete-modal').classList.contains('active')) closeModal('delete-modal', restoreFocus);
     currentDeletePerson = null;
 }
 
@@ -966,9 +1259,10 @@ async function confirmDelete() {
     
     try {
         await deleteFromDB(currentDeletePerson);
+        closeDeleteModal(false);
+        await updateGallery();
+        document.getElementById('gallery-add-btn').focus();
         showToast('Person deleted successfully');
-        closeDeleteModal();
-        updateGallery();
     } catch (error) {
         console.error('Delete error:', error);
         showToast('Failed to delete person');
@@ -983,32 +1277,30 @@ function showToast(message) {
     const toast = document.getElementById('toast');
     toast.textContent = message;
     toast.classList.add('show');
-    
-    setTimeout(() => {
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
         toast.classList.remove('show');
-    }, 3000);
+    }, 3200);
 }
 
 // ============================================
 // Initialize App
 // ============================================
 
-window.addEventListener('load', init);
+document.addEventListener('DOMContentLoaded', init, { once: true });
 
-// Register the service worker (offline support + Android "Install app").
-if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/sw.js').catch((error) => {
-            console.error('Service worker registration failed:', error);
-        });
-    });
+function shutdownCameraSessions() {
+    cameraRequestId += 1;
+    enrollCameraRequestId += 1;
+    stopRecognition();
+    if (stream) stopCamera();
+    showRecognitionCameraOff();
+    closeEnrollCamera();
 }
 
-// Handle page visibility
+// Release cameras when the app is backgrounded to protect privacy and battery.
 document.addEventListener('visibilitychange', () => {
-    if (document.hidden && stream) {
-        // Page is hidden, could pause recognition
-    } else if (!document.hidden && stream && isRecognizing) {
-        // Page is visible again
-    }
+    if (document.hidden) shutdownCameraSessions();
 });
+
+window.addEventListener('pagehide', shutdownCameraSessions);

@@ -2,8 +2,9 @@
 
 ```
 ghostface/
-├── index.html              # Main app HTML
-├── app.js                  # Core application logic
+├── index.html              # Semantic app shell and views
+├── styles.css             # Responsive design system and component styles
+├── app.js                  # Core application and interaction logic
 ├── sw.js                   # Service Worker for offline support
 ├── manifest.json           # PWA manifest
 ├── package.json            # Project metadata
@@ -12,7 +13,9 @@ ghostface/
 ├── PROJECT_STRUCTURE.md    # This file
 ├── start.sh                # Quick start script
 ├── serve.js                # HTTPS server (optional)
-├── generate-icons.html     # Icon generator tool
+├── generate-icons.html     # Browser-based icon preview tool
+├── scripts/
+│   └── generate_icons.py  # Dependency-free PNG icon generator
 ├── .gitignore             # Git ignore patterns
 └── icons/                 # App icons folder
     ├── icon-192.svg       # App icon (SVG)
@@ -31,14 +34,17 @@ ghostface/
 
 ### Core Files
 
-**index.html** (656 lines)
-- Main application HTML
-- Includes all CSS styles inline
-- Defines the three modes: Recognize, Enroll, Gallery
-- Responsive design for mobile devices
-- PWA meta tags and icons
+**index.html**
+- Semantic application shell and three task-focused views
+- Accessible navigation, statuses, dialogs, and controls
+- PWA metadata and optimized resource hints
 
-**app.js** (693 lines)
+**styles.css**
+- Cached, responsive design system with no web-font dependency
+- Desktop, tablet, compact-phone, landscape, safe-area, reduced-motion, and high-contrast behavior
+- Shared controls, surfaces, camera, enrollment, gallery, dialog, and feedback components
+
+**app.js**
 - Complete application logic
 - Face detection and recognition using face-api.js
 - IndexedDB database for storing people
@@ -99,7 +105,7 @@ ghostface/
 - Face recognition with 128-dimensional embeddings
 - Multiple face detection simultaneously
 - Visual feedback with face boxes and labels
-- Conservative threshold (0.6) to prevent false positives
+- Configurable distance threshold (currently 0.6; validate before production use)
 
 ### Enrollment Mode
 - Camera-based photo capture
@@ -144,7 +150,7 @@ ghostface/
 - Easy to understand and modify
 
 ### Why face-api.js?
-- ArcFace-style recognition (state-of-the-art)
+- Browser-based face descriptors run entirely on the device
 - Runs entirely in browser
 - No server/API needed
 - Good accuracy/performance balance
@@ -185,7 +191,8 @@ Requires:
 - ✅ No network requests (after model load)
 - ✅ No analytics/tracking
 - ✅ No account required
-- ✅ GDPR/BIPA compliant by design
+- ✅ Privacy-oriented local storage and processing
+- ⚠️ Legal obligations vary by jurisdiction and use case
 - ⚠️ Get consent before enrolling others
 
 ## Future Enhancements
