@@ -1,0 +1,23 @@
+{
+  "name": "facehelper",
+  "version": "1.0.0",
+  "description": "Face recognition assistant for prosopagnosia - Progressive Web App",
+  "main": "index.html",
+  "scripts": {
+    "start": "npx http-server -p 3000 -c-1",
+    "serve": "npx http-server -p 8080 --ssl --cert cert.pem --key key.pem"
+  },
+  "keywords": [
+    "face-recognition",
+    "accessibility",
+    "pwa",
+    "prosopagnosia",
+    "assistive-technology"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}
