@@ -8,8 +8,12 @@ let enrollVideo;
 let stream = null;
 let enrollStream = null;
 let isRecognizing = false;
-let recognitionInterval = null;
+let recognitionTimer = null;
+let recognitionRunId = 0;
+let faceMatcher = null;
 let ttsEnabled = false;
+let lastSpokenKey = '';
+let lastFaceSeenAt = 0;
 let currentMode = 'recognize';
 
 // Enrollment State
@@ -146,30 +150,35 @@ async function loadModels() {
 
 async function startCamera() {
     try {
-        const constraints = {
+        stream = await navigator.mediaDevices.getUserMedia({
             video: {
                 facingMode: 'user',
-                width: { ideal: 1280 },
+                width: { ideal: 960 },
                 height: { ideal: 720 }
-            }
-        };
-        
-        stream = await navigator.mediaDevices.getUserMedia(constraints);
+            },
+            audio: false
+        });
+
         video = document.getElementById('video');
         video.srcObject = stream;
-        
-        video.onloadedmetadata = () => {
-            canvas = document.getElementById('canvas');
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            ctx = canvas.getContext('2d');
-        };
-        
+        await waitForVideo(video);
+        await video.play();
+
+        canvas = document.getElementById('canvas');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        ctx = canvas.getContext('2d');
+
+        // Match the stage to the real camera ratio so the detection boxes line
+        // up without stretching or cropping the video.
+        document.getElementById('recognition-camera').style.aspectRatio = `${video.videoWidth} / ${video.videoHeight}`;
         updateCameraStatus(true);
         return true;
     } catch (error) {
         console.error('Camera error:', error);
-        showToast('Camera access denied. Please enable camera permissions.');
+        if (stream) stream.getTracks().forEach(track => track.stop());
+        stream = null;
+        updateCameraStatus(false);
         return false;
     }
 }
@@ -179,6 +188,7 @@ async function stopCamera(targetStream = stream) {
         targetStream.getTracks().forEach(track => track.stop());
         if (targetStream === stream) {
             stream = null;
+            if (video) video.srcObject = null;
             updateCameraStatus(false);
         } else {
             enrollStream = null;
@@ -188,43 +198,49 @@ async function stopCamera(targetStream = stream) {
 
 async function toggleCamera() {
     const cameraButton = document.getElementById('recognition-camera-btn');
-    const cameraContainer = document.getElementById('recognition-camera');
-    const placeholder = document.getElementById('recognition-placeholder');
-    const result = document.getElementById('recognition-result');
+    cameraButton.disabled = true;
 
     if (stream) {
-        await stopCamera();
         stopRecognition();
-        cameraButton.textContent = 'Start Camera';
-        cameraContainer.classList.add('camera-off');
-        placeholder.classList.remove('hidden');
-        result.classList.add('hidden');
-        result.textContent = 'Looking for faces…';
-        if (ctx && canvas) ctx.clearRect(0, 0, canvas.width, canvas.height);
-    } else {
-        const started = await startCamera();
-        if (started) {
-            cameraContainer.classList.remove('camera-off');
-            placeholder.classList.add('hidden');
-            result.classList.remove('hidden');
-            result.textContent = 'Looking for faces…';
-            startRecognition();
-            cameraButton.textContent = 'Stop Camera';
-        }
+        await stopCamera();
+        showRecognitionCameraOff();
+        cameraButton.disabled = false;
+        return;
     }
+
+    cameraButton.textContent = 'Opening camera…';
+    updateRecognitionResult('searching', 'Starting camera', 'Waiting for camera permission.');
+    const started = await startCamera();
+
+    if (!started) {
+        showRecognitionCameraOff();
+        updateRecognitionResult('error', 'Camera unavailable', 'Allow camera access in your browser settings, then try again.');
+        cameraButton.disabled = false;
+        return;
+    }
+
+    document.getElementById('recognition-camera').classList.remove('camera-off');
+    document.getElementById('recognition-placeholder').classList.add('hidden');
+    document.getElementById('camera-live-badge').classList.remove('hidden');
+    cameraButton.textContent = 'Stop camera';
+    cameraButton.disabled = false;
+    await startRecognition();
+}
+
+function showRecognitionCameraOff() {
+    const cameraContainer = document.getElementById('recognition-camera');
+    cameraContainer.classList.add('camera-off');
+    cameraContainer.style.removeProperty('aspect-ratio');
+    document.getElementById('recognition-placeholder').classList.remove('hidden');
+    document.getElementById('camera-live-badge').classList.add('hidden');
+    document.getElementById('recognition-camera-btn').textContent = 'Start camera';
+    updateRecognitionResult('idle', 'Camera is off', 'Start the camera to begin recognizing faces.');
+    if (ctx && canvas) ctx.clearRect(0, 0, canvas.width, canvas.height);
 }
 
 function updateCameraStatus(active) {
-    const statusDot = document.getElementById('camera-status');
-    const statusText = document.getElementById('camera-status-text');
-    
-    if (active) {
-        statusDot.classList.remove('inactive');
-        statusText.textContent = 'Camera Active';
-    } else {
-        statusDot.classList.add('inactive');
-        statusText.textContent = 'Camera Off';
-    }
+    const liveBadge = document.getElementById('camera-live-badge');
+    if (liveBadge) liveBadge.classList.toggle('hidden', !active);
 }
 
 // ============================================
@@ -251,11 +267,7 @@ function switchMode(mode) {
     if (mode !== 'recognize' && stream) {
         stopRecognition();
         stopCamera();
-        document.getElementById('recognition-camera-btn').textContent = 'Start Camera';
-        document.getElementById('recognition-camera').classList.add('camera-off');
-        document.getElementById('recognition-placeholder').classList.remove('hidden');
-        document.getElementById('recognition-result').classList.add('hidden');
-        if (ctx && canvas) ctx.clearRect(0, 0, canvas.width, canvas.height);
+        showRecognitionCameraOff();
     }
     
     if (mode !== 'enroll') {
@@ -274,105 +286,171 @@ function switchMode(mode) {
 // Recognition Mode
 // ============================================
 
-function startRecognition() {
+async function startRecognition() {
     if (!stream) return;
-    
-    isRecognizing = true;
-    recognitionInterval = setInterval(async () => {
-        if (!isRecognizing || !video) return;
-        
-        try {
-            const detections = await faceapi.detectAllFaces(
-                video,
-                new faceapi.TinyFaceDetectorOptions()
-            )
-            .withFaceLandmarks()
-            .withFaceDescriptors();
-            
-            if (detections.length > 0) {
-                await processDetections(detections);
-            } else {
-                document.getElementById('recognition-result').textContent = 'No face detected';
-            }
-        } catch (error) {
-            console.error('Recognition error:', error);
+
+    updateRecognitionResult('searching', 'Looking for a face', 'Keep the camera steady and use good lighting.');
+
+    try {
+        const people = await getAllFromDB();
+        if (!stream) return;
+
+        if (people.length === 0) {
+            faceMatcher = null;
+            updateRecognitionResult('empty', 'No people added yet', 'Add someone first, then return here to recognize them.');
+            return;
         }
-    }, 500);
+
+        const labeledDescriptors = people.map(person => new faceapi.LabeledFaceDescriptors(
+            person.name,
+            person.descriptors.map(descriptor => new Float32Array(descriptor))
+        ));
+        faceMatcher = new faceapi.FaceMatcher(labeledDescriptors, 0.6);
+    } catch (error) {
+        console.error('Could not prepare recognition:', error);
+        updateRecognitionResult('error', 'Recognition unavailable', 'Could not read the saved people on this device.');
+        return;
+    }
+
+    isRecognizing = true;
+    const runId = ++recognitionRunId;
+    runRecognitionLoop(runId);
+}
+
+async function runRecognitionLoop(runId) {
+    if (!isRecognizing || runId !== recognitionRunId || !stream || !video) return;
+
+    try {
+        const detections = await faceapi.detectAllFaces(
+            video,
+            new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.45 })
+        )
+        .withFaceLandmarks()
+        .withFaceDescriptors();
+
+        if (!isRecognizing || runId !== recognitionRunId) return;
+
+        if (detections.length === 0) {
+            if (ctx && canvas) ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (Date.now() - lastFaceSeenAt > 3000) lastSpokenKey = '';
+            updateRecognitionResult('no-face', 'No face in view', 'Move closer and face the camera.');
+        } else {
+            lastFaceSeenAt = Date.now();
+            processDetections(detections);
+        }
+    } catch (error) {
+        if (isRecognizing && runId === recognitionRunId) {
+            console.error('Recognition error:', error);
+            updateRecognitionResult('error', 'Could not scan this frame', 'Hold the device steady while the camera retries.');
+        }
+    } finally {
+        // Schedule the next scan only after this one finishes. The previous
+        // setInterval implementation could stack model runs and cause lag.
+        if (isRecognizing && runId === recognitionRunId) {
+            recognitionTimer = setTimeout(() => runRecognitionLoop(runId), 300);
+        }
+    }
 }
 
 function stopRecognition() {
     isRecognizing = false;
-    if (recognitionInterval) {
-        clearInterval(recognitionInterval);
-        recognitionInterval = null;
+    recognitionRunId += 1;
+    faceMatcher = null;
+    lastSpokenKey = '';
+    lastFaceSeenAt = 0;
+    if (recognitionTimer) {
+        clearTimeout(recognitionTimer);
+        recognitionTimer = null;
     }
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel();
 }
 
-async function processDetections(detections) {
-    const people = await getAllFromDB();
-    
-    if (people.length === 0) {
-        document.getElementById('recognition-result').textContent = 'No people enrolled yet';
-        return;
-    }
-    
-    // Build labeled face descriptors
-    const labeledDescriptors = people.map(person => {
-        return new faceapi.LabeledFaceDescriptors(
-            person.name,
-            person.descriptors.map(d => new Float32Array(d))
+function processDetections(detections) {
+    if (!faceMatcher) return;
+
+    const results = detections.map(detection => faceMatcher.findBestMatch(detection.descriptor));
+    const displayNames = results.map(result => result.label === 'unknown' ? 'Unknown' : result.label);
+    const knownNames = [...new Set(results
+        .filter(result => result.label !== 'unknown')
+        .map(result => result.label))];
+    const unknownCount = results.filter(result => result.label === 'unknown').length;
+
+    if (knownNames.length === 0) {
+        updateRecognitionResult(
+            'unknown',
+            results.length === 1 ? 'Unknown person' : `${results.length} unknown people`,
+            'No close match was found in your gallery.'
         );
-    });
-    
-    const faceMatcher = new faceapi.FaceMatcher(labeledDescriptors, 0.6);
-    
-    // Match detected faces
-    const results = detections.map(d => faceMatcher.findBestMatch(d.descriptor));
-    
-    // Get unique names
-    const names = results.map(r => r.toString()).join(', ');
-    const displayNames = results.map(r => {
-        if (r.label === 'unknown') {
-            return 'Unknown';
-        }
-        return r.label;
-    });
-    
-    // Display result
-    const resultText = displayNames.join(' • ');
-    document.getElementById('recognition-result').textContent = resultText;
-    
-    // Speak if TTS enabled
-    if (ttsEnabled && displayNames.length > 0) {
-        speakNames(displayNames);
+    } else {
+        const detail = unknownCount > 0
+            ? `${knownNames.length} recognized, ${unknownCount} unknown.`
+            : knownNames.length === 1 ? 'Match found.' : `${knownNames.length} people recognized.`;
+        updateRecognitionResult('match', displayNames.join(' • '), detail);
+        announceRecognizedNames(knownNames);
     }
-    
-    // Draw on canvas
+
     drawDetections(detections, results);
+}
+
+function updateRecognitionResult(state, title, detail) {
+    const card = document.getElementById('recognition-result-card');
+    const label = document.getElementById('recognition-result-label');
+    const titleElement = document.getElementById('recognition-result');
+    const detailElement = document.getElementById('recognition-result-detail');
+    if (!card || !label || !titleElement || !detailElement) return;
+
+    const labels = {
+        idle: 'Ready',
+        searching: 'Scanning',
+        'no-face': 'Scanning',
+        match: 'Recognized',
+        unknown: 'No match',
+        empty: 'Setup needed',
+        error: 'Problem'
+    };
+
+    card.dataset.state = state;
+    label.textContent = labels[state] || 'Status';
+    titleElement.textContent = title;
+    detailElement.textContent = detail;
+}
+
+function announceRecognizedNames(names) {
+    if (!ttsEnabled || names.length === 0) return;
+    const key = names.slice().sort().join('|');
+    if (key === lastSpokenKey) return;
+
+    lastSpokenKey = key;
+    speakNames(names);
 }
 
 function drawDetections(detections, results) {
     if (!ctx || !canvas) return;
-    
+
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    
-    detections.forEach((detection, i) => {
+    ctx.font = '600 16px sans-serif';
+    ctx.textBaseline = 'middle';
+
+    detections.forEach((detection, index) => {
         const box = detection.detection.box;
-        const result = results[i];
-        
-        // Draw box
-        ctx.strokeStyle = result.label === 'unknown' ? '#f56565' : '#48bb78';
-        ctx.lineWidth = 3;
-        ctx.strokeRect(box.x, box.y, box.width, box.height);
-        
-        // Draw label
+        const result = results[index];
         const label = result.label === 'unknown' ? 'Unknown' : result.label;
-        ctx.fillStyle = result.label === 'unknown' ? '#f56565' : '#48bb78';
-        ctx.fillRect(box.x, box.y - 30, ctx.measureText(label).width + 10, 30);
-        
+        const color = result.label === 'unknown' ? '#ed8936' : '#48bb78';
+        // The preview is mirrored like a selfie camera, so mirror only the
+        // horizontal box coordinate while keeping label text readable.
+        const x = canvas.width - box.x - box.width;
+        const labelWidth = ctx.measureText(label).width + 20;
+        const labelHeight = 30;
+        const labelX = Math.max(0, Math.min(x, canvas.width - labelWidth));
+        const labelY = Math.max(0, box.y - labelHeight);
+
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 4;
+        ctx.strokeRect(x, box.y, box.width, box.height);
+        ctx.fillStyle = color;
+        ctx.fillRect(labelX, labelY, labelWidth, labelHeight);
         ctx.fillStyle = 'white';
-        ctx.font = '16px sans-serif';
-        ctx.fillText(label, box.x + 5, box.y - 10);
+        ctx.fillText(label, labelX + 10, labelY + labelHeight / 2);
     });
 }
 
@@ -382,18 +460,21 @@ function drawDetections(detections, results) {
 
 function toggleTTS() {
     ttsEnabled = !ttsEnabled;
-    
-    const statusDot = document.getElementById('tts-status');
-    const statusText = document.getElementById('tts-status-text');
-    
+
+    const button = document.getElementById('audio-toggle-btn');
+    const label = document.getElementById('audio-toggle-label');
+    button.classList.toggle('active', ttsEnabled);
+    button.setAttribute('aria-pressed', String(ttsEnabled));
+    label.textContent = ttsEnabled ? 'Audio on' : 'Audio off';
+
     if (ttsEnabled) {
-        statusDot.classList.remove('inactive');
-        statusText.textContent = 'On';
-        showToast('Audio enabled');
+        // Allow the current person to be announced immediately after audio is
+        // turned on, even if they were already visible.
+        lastSpokenKey = '';
+        showToast('Audio announcements on');
     } else {
-        statusDot.classList.add('inactive');
-        statusText.textContent = 'Off';
-        showToast('Audio disabled');
+        if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+        showToast('Audio announcements off');
     }
 }
 
@@ -438,7 +519,7 @@ async function openEnrollCamera() {
         if (stream) {
             stopRecognition();
             await stopCamera();
-            document.getElementById('recognition-camera-btn').textContent = 'Start Camera';
+            showRecognitionCameraOff();
         }
 
         enrollStream = await navigator.mediaDevices.getUserMedia({

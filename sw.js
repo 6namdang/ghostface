@@ -1,6 +1,6 @@
 // Service Worker for FaceHelper PWA
 // Bump the version whenever cached files change so clients pick up updates.
-const CACHE_NAME = 'facehelper-cache-v4';
+const CACHE_NAME = 'facehelper-cache-v5';
 
 // Only same-origin files are precached. cache.addAll() fails as a whole if any
 // one URL fails, so a CDN hiccup must not stop the worker from installing.
