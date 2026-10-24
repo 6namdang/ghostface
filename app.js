@@ -15,6 +15,9 @@ let currentMode = 'recognize';
 // Enrollment State
 let enrollmentPhotos = [];
 let enrollmentDescriptors = [];
+let enrollDetectInterval = null;   // live face-detection loop for enrollment
+let enrollFaceReady = false;       // is a face currently visible?
+let isCapturing = false;           // guard against overlapping captures
 
 // Database
 const DB_NAME = 'FaceHelperDB';
@@ -170,7 +173,7 @@ async function startCamera(targetVideo = 'video') {
         } else {
             enrollStream = mediaStream;
             enrollVideo = document.getElementById('enroll-video');
-            enrollVideo.srcObject = stream;
+            enrollVideo.srcObject = mediaStream;
             
             enrollVideo.onloadedmetadata = () => {
                 enrollCanvas = document.getElementById('enroll-canvas');
@@ -245,6 +248,15 @@ function switchMode(mode) {
     
     // Show selected mode
     document.getElementById(`${mode}-mode`).classList.remove('hidden');
+    
+    // Leaving enrollment: stop its detection loop and release its camera.
+    if (mode !== 'enroll') {
+        stopEnrollDetectionLoop();
+        if (enrollStream) {
+            enrollStream.getTracks().forEach(track => track.stop());
+            enrollStream = null;
+        }
+    }
     
     // Handle mode-specific logic
     if (mode === 'recognize') {
@@ -413,6 +425,7 @@ async function startEnrollmentMode() {
 }
 
 async function startEnrollCamera() {
+    setEnrollStatus('Starting camera…', 'waiting');
     try {
         const constraints = {
             video: {
@@ -431,10 +444,85 @@ async function startEnrollCamera() {
             enrollCanvas.width = enrollVideo.videoWidth;
             enrollCanvas.height = enrollVideo.videoHeight;
             enrollCtx = enrollCanvas.getContext('2d');
+            startEnrollDetectionLoop();
         };
     } catch (error) {
         console.error('Enrollment camera error:', error);
+        setEnrollStatus('Camera unavailable', 'waiting');
         showToast('Camera access required for enrollment');
+    }
+}
+
+// Continuously detect a face in the enrollment preview so the user gets
+// real-time feedback (green box + status) and knows exactly when to capture.
+function startEnrollDetectionLoop() {
+    stopEnrollDetectionLoop();
+    enrollDetectInterval = setInterval(async () => {
+        if (!enrollVideo || !enrollStream || isCapturing) return;
+        try {
+            const detection = await faceapi.detectSingleFace(
+                enrollVideo,
+                new faceapi.TinyFaceDetectorOptions()
+            );
+            drawEnrollBox(detection);
+            if (detection) {
+                enrollFaceReady = true;
+                setEnrollStatus('✅ Face detected — ready to capture', 'ready');
+            } else {
+                enrollFaceReady = false;
+                setEnrollStatus('⚠️ Position your face in the frame', 'waiting');
+            }
+            updateCaptureButton();
+        } catch (error) {
+            // Detection errors are non-fatal; just skip this frame.
+        }
+    }, 300);
+}
+
+function stopEnrollDetectionLoop() {
+    if (enrollDetectInterval) {
+        clearInterval(enrollDetectInterval);
+        enrollDetectInterval = null;
+    }
+    enrollFaceReady = false;
+}
+
+// Draw a live bounding box over the detected face. The canvas is flipped to
+// match the mirrored video so the box lines up with what the user sees.
+function drawEnrollBox(detection) {
+    if (!enrollCtx || !enrollCanvas) return;
+    enrollCtx.clearRect(0, 0, enrollCanvas.width, enrollCanvas.height);
+    if (!detection) return;
+    const box = detection.box;
+    enrollCtx.save();
+    enrollCtx.translate(enrollCanvas.width, 0);
+    enrollCtx.scale(-1, 1);
+    enrollCtx.strokeStyle = '#48bb78';
+    enrollCtx.lineWidth = 3;
+    enrollCtx.strokeRect(box.x, box.y, box.width, box.height);
+    enrollCtx.restore();
+}
+
+function setEnrollStatus(text, state) {
+    const el = document.getElementById('enroll-status');
+    if (!el) return;
+    el.textContent = text;
+    el.classList.remove('ready', 'waiting');
+    if (state) el.classList.add(state);
+}
+
+function updateCaptureButton() {
+    const btn = document.getElementById('capture-btn');
+    if (!btn) return;
+    if (isCapturing) {
+        btn.disabled = true;
+        btn.textContent = '⏳ Capturing…';
+    } else if (enrollFaceReady) {
+        btn.disabled = false;
+        btn.textContent = '📸 Capture Photo';
+    } else {
+        btn.disabled = true;
+        btn.textContent = '📸 Capture Photo';
     }
 }
 
@@ -444,13 +532,18 @@ async function capturePhoto() {
         return;
     }
     
+    if (isCapturing) return; // prevent overlapping captures
+    
     if (enrollmentDescriptors.length >= 20) {
         showToast('Maximum 20 photos per person');
         return;
     }
     
+    isCapturing = true;
+    updateCaptureButton();
+    
     try {
-        // Detect face
+        // Detect face (with descriptor for storage)
         const detection = await faceapi.detectSingleFace(
             enrollVideo,
             new faceapi.TinyFaceDetectorOptions()
@@ -459,31 +552,42 @@ async function capturePhoto() {
         .withFaceDescriptor();
         
         if (!detection) {
-            showToast('No face detected. Please try again.');
+            showToast('No face detected — hold steady and try again.');
             return;
         }
         
         // Store descriptor
         enrollmentDescriptors.push(Array.from(detection.descriptor));
         
-        // Capture image (optional, for visual feedback)
-        enrollCtx.drawImage(enrollVideo, 0, 0);
-        const imageData = enrollCanvas.toDataURL('image/jpeg', 0.7);
-        enrollmentPhotos.push(imageData);
+        // Snapshot a thumbnail on a temporary canvas so we never cover the
+        // live preview canvas (which the detection loop keeps drawing on).
+        const snap = document.createElement('canvas');
+        snap.width = enrollVideo.videoWidth;
+        snap.height = enrollVideo.videoHeight;
+        snap.getContext('2d').drawImage(enrollVideo, 0, 0);
+        enrollmentPhotos.push(snap.toDataURL('image/jpeg', 0.7));
         
         updatePhotoCount();
         showToast(`Photo ${enrollmentPhotos.length} captured`);
-        
-        // Flash effect
-        enrollCanvas.style.opacity = '0';
-        setTimeout(() => {
-            enrollCanvas.style.opacity = '1';
-        }, 100);
+        triggerCaptureFlash();
         
     } catch (error) {
         console.error('Capture error:', error);
         showToast('Failed to capture photo');
+    } finally {
+        isCapturing = false;
+        updateCaptureButton();
     }
+}
+
+// Brief white screen-flash for capture feedback — purely a CSS animation
+// overlay, so it never freezes or hides the live camera preview.
+function triggerCaptureFlash() {
+    const flash = document.getElementById('capture-flash');
+    if (!flash) return;
+    flash.classList.remove('flash');
+    void flash.offsetWidth; // force reflow so the animation can restart
+    flash.classList.add('flash');
 }
 
 function updatePhotoCount() {

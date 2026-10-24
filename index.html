@@ -474,6 +474,58 @@
             opacity: 1;
         }
 
+        /* Mirror the front-camera preview so it feels like a selfie view */
+        #enroll-video,
+        #video {
+            transform: scaleX(-1);
+        }
+
+        /* Live detection status pill shown over the enrollment camera */
+        .enroll-status {
+            position: absolute;
+            top: 0.75rem;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.65);
+            color: white;
+            padding: 0.4rem 0.9rem;
+            border-radius: 999px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            white-space: nowrap;
+            pointer-events: none;
+            transition: background 0.2s;
+        }
+
+        .enroll-status.ready {
+            background: rgba(72, 187, 120, 0.9);
+        }
+
+        .enroll-status.waiting {
+            background: rgba(245, 101, 101, 0.9);
+        }
+
+        /* White screen-flash on capture (does not freeze the preview) */
+        .capture-flash {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: white;
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .capture-flash.flash {
+            animation: flash 0.25s ease-out;
+        }
+
+        @keyframes flash {
+            0% { opacity: 0.85; }
+            100% { opacity: 0; }
+        }
+
         /* Status Bar */
         .status-bar {
             background: var(--card);
@@ -596,11 +648,13 @@
                     </div>
 
                     <div class="camera-container" style="margin: 1rem 0; border-radius: 8px;">
-                        <video id="enroll-video" autoplay playsinline></video>
+                        <video id="enroll-video" autoplay playsinline muted></video>
                         <canvas id="enroll-canvas"></canvas>
+                        <div class="enroll-status" id="enroll-status">Starting camera…</div>
+                        <div class="capture-flash" id="capture-flash"></div>
                     </div>
 
-                    <button class="btn btn-secondary" onclick="capturePhoto()" style="margin-bottom: 1rem;">
+                    <button class="btn btn-secondary" onclick="capturePhoto()" id="capture-btn" style="margin-bottom: 1rem;" disabled>
                         📸 Capture Photo
                     </button>
 
