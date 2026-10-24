@@ -138,18 +138,58 @@
             padding-bottom: 80px;
         }
 
-        /* Camera Container */
-        .camera-container {
-            position: relative;
+        /* Recognition */
+        .recognition-shell {
             width: 100%;
-            max-width: 100vw;
-            background: #111827;
-            overflow: hidden;
+            max-width: 680px;
+            margin: 0 auto;
+            padding: 1.5rem;
         }
 
-        .camera-container.camera-off {
+        .recognition-header {
+            margin-bottom: 1.25rem;
+        }
+
+        .recognition-header h2 {
+            margin-bottom: 0.4rem;
+            font-size: 1.5rem;
+        }
+
+        .recognition-header p {
+            color: var(--text-light);
+            line-height: 1.45;
+        }
+
+        .recognition-camera {
+            position: relative;
+            width: 100%;
             aspect-ratio: 4 / 3;
-            background: #edf2f7;
+            overflow: hidden;
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            background: #111827;
+            box-shadow: var(--shadow);
+        }
+
+        .recognition-camera.camera-off {
+            background: var(--card);
+            box-shadow: none;
+        }
+
+        #video {
+            width: 100%;
+            height: 100%;
+            display: block;
+            object-fit: cover;
+            transform: scaleX(-1);
+        }
+
+        #canvas {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
         }
 
         .recognition-placeholder {
@@ -159,91 +199,190 @@
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            gap: 0.4rem;
             padding: 2rem;
             color: var(--text);
             text-align: center;
         }
 
+        .recognition-placeholder-icon {
+            display: flex;
+            width: 58px;
+            height: 58px;
+            margin-bottom: 1rem;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            background: #eef0ff;
+            color: var(--primary);
+        }
+
+        .recognition-placeholder-icon svg {
+            width: 28px;
+            height: 28px;
+        }
+
+        .recognition-placeholder strong {
+            margin-bottom: 0.35rem;
+            font-size: 1.05rem;
+        }
+
         .recognition-placeholder span {
-            max-width: 300px;
+            max-width: 320px;
             color: var(--text-light);
             font-size: 0.9rem;
             line-height: 1.4;
         }
 
-        #video {
-            width: 100%;
-            height: auto;
+        .camera-live-badge {
+            position: absolute;
+            top: 0.75rem;
+            left: 0.75rem;
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.4rem 0.65rem;
+            border-radius: 999px;
+            background: rgba(17, 24, 39, 0.72);
+            color: white;
+            font-size: 0.78rem;
+            font-weight: 600;
+            backdrop-filter: blur(6px);
+        }
+
+        .camera-live-badge::before {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: #68d391;
+            content: '';
+        }
+
+        .recognition-result-card {
+            display: flex;
+            gap: 0.9rem;
+            min-height: 92px;
+            margin-top: 1rem;
+            padding: 1rem;
+            align-items: center;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            background: var(--card);
+            transition: border-color 0.2s, background 0.2s;
+        }
+
+        .result-indicator {
+            flex: 0 0 auto;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #a0aec0;
+        }
+
+        .recognition-result-copy {
+            min-width: 0;
+        }
+
+        .recognition-result-copy span,
+        .recognition-result-copy strong,
+        .recognition-result-copy p {
             display: block;
         }
 
-        #canvas {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            pointer-events: none;
+        .recognition-result-copy span {
+            margin-bottom: 0.15rem;
+            color: var(--text-light);
+            font-size: 0.72rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
         }
 
-        /* Overlay Controls */
-        .overlay-controls {
-            position: absolute;
-            bottom: 1rem;
-            left: 0;
-            right: 0;
-            display: flex;
-            justify-content: center;
-            gap: 1rem;
-            padding: 0 1rem;
+        .recognition-result-copy strong {
+            overflow-wrap: anywhere;
+            font-size: 1.2rem;
         }
 
-        .overlay-btn {
-            padding: 0.75rem 1.5rem;
-            border: none;
-            border-radius: 8px;
-            font-size: 0.95rem;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all 0.2s;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
+        .recognition-result-copy p {
+            margin-top: 0.2rem;
+            color: var(--text-light);
+            font-size: 0.85rem;
+            line-height: 1.35;
         }
 
-        .overlay-btn.primary {
-            background: white;
-            color: var(--primary);
+        .recognition-result-card[data-state="searching"] .result-indicator {
+            background: var(--primary);
+            animation: pulse 1.2s ease-in-out infinite;
         }
 
-        .overlay-btn.secondary {
-            background: rgba(255, 255, 255, 0.9);
-            color: var(--text);
+        .recognition-result-card[data-state="match"] {
+            border-color: #9ae6b4;
+            background: #f0fff4;
         }
 
-        .overlay-btn.danger {
+        .recognition-result-card[data-state="match"] .result-indicator {
+            background: var(--secondary);
+        }
+
+        .recognition-result-card[data-state="unknown"],
+        .recognition-result-card[data-state="empty"] {
+            border-color: #fbd38d;
+            background: #fffaf0;
+        }
+
+        .recognition-result-card[data-state="unknown"] .result-indicator,
+        .recognition-result-card[data-state="empty"] .result-indicator {
+            background: #dd6b20;
+        }
+
+        .recognition-result-card[data-state="error"] {
+            border-color: #feb2b2;
+            background: #fff5f5;
+        }
+
+        .recognition-result-card[data-state="error"] .result-indicator {
             background: var(--danger);
-            color: white;
         }
 
-        /* Recognition Overlay */
-        .recognition-overlay {
-            position: absolute;
-            top: 1rem;
-            left: 1rem;
-            right: 1rem;
-            background: rgba(0, 0, 0, 0.7);
-            color: white;
-            padding: 1rem;
-            border-radius: 8px;
-            font-size: 1.5rem;
-            font-weight: 600;
-            text-align: center;
-            min-height: 60px;
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.45; transform: scale(0.75); }
+        }
+
+        .recognition-actions {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(130px, 0.45fr);
+            gap: 0.75rem;
+            margin-top: 1rem;
+        }
+
+        .audio-toggle {
             display: flex;
-            align-items: center;
             justify-content: center;
+            align-items: center;
+            gap: 0.45rem;
+        }
+
+        .audio-toggle.active {
+            border-color: var(--primary);
+            background: #eef0ff;
+            color: var(--primary-dark);
+        }
+
+        .privacy-note {
+            display: flex;
+            gap: 0.45rem;
+            margin-top: 0.9rem;
+            align-items: flex-start;
+            color: var(--text-light);
+            font-size: 0.78rem;
+            line-height: 1.4;
+        }
+
+        .privacy-note svg {
+            flex: 0 0 auto;
+            width: 15px;
+            height: 15px;
+            margin-top: 1px;
         }
 
         /* Enrollment */
@@ -744,34 +883,6 @@
             opacity: 1;
         }
 
-        /* Status Bar */
-        .status-bar {
-            background: var(--card);
-            padding: 0.75rem 1rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            border-bottom: 1px solid var(--border);
-            font-size: 0.875rem;
-        }
-
-        .status-item {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-
-        .status-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: var(--secondary);
-        }
-
-        .status-dot.inactive {
-            background: var(--text-light);
-        }
-
         /* Hidden */
         .hidden {
             display: none !important;
@@ -788,8 +899,14 @@
                 font-size: 0.875rem;
             }
 
-            .recognition-overlay {
-                font-size: 1.25rem;
+            .recognition-shell {
+                padding: 1rem;
+            }
+        }
+
+        @media (max-width: 400px) {
+            .recognition-actions {
+                grid-template-columns: 1fr;
             }
         }
     </style>
@@ -822,34 +939,53 @@
         <main>
             <!-- Recognition Mode -->
             <section id="recognize-mode">
-                <div class="status-bar">
-                    <div class="status-item">
-                        <div class="status-dot inactive" id="camera-status"></div>
-                        <span id="camera-status-text">Camera Off</span>
+                <div class="recognition-shell">
+                    <div class="recognition-header">
+                        <h2>Recognize someone</h2>
+                        <p>Start the camera and point it toward a face. Recognition stays on this device.</p>
                     </div>
-                    <div class="status-item">
-                        <div class="status-dot inactive" id="tts-status"></div>
-                        <span>Audio: <span id="tts-status-text">Off</span></span>
+
+                    <div class="recognition-camera camera-off" id="recognition-camera">
+                        <video id="video" autoplay playsinline muted></video>
+                        <canvas id="canvas"></canvas>
+                        <div class="recognition-placeholder" id="recognition-placeholder">
+                            <div class="recognition-placeholder-icon" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M14.5 4 16 7h3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h3l1.5-3h5Z"/>
+                                    <circle cx="12" cy="13" r="3"/>
+                                </svg>
+                            </div>
+                            <strong>Camera is off</strong>
+                            <span>Start it when you are ready. You can stop it at any time.</span>
+                        </div>
+                        <div class="camera-live-badge hidden" id="camera-live-badge">Camera on</div>
                     </div>
-                </div>
-                <div class="camera-container camera-off" id="recognition-camera">
-                    <video id="video" autoplay playsinline></video>
-                    <canvas id="canvas"></canvas>
-                    <div class="recognition-placeholder" id="recognition-placeholder">
-                        <strong>Camera is off</strong>
-                        <span>Start the camera when you are ready to recognize someone.</span>
+
+                    <div class="recognition-result-card" id="recognition-result-card" data-state="idle" role="status" aria-live="polite">
+                        <div class="result-indicator" aria-hidden="true"></div>
+                        <div class="recognition-result-copy">
+                            <span id="recognition-result-label">Ready</span>
+                            <strong id="recognition-result">Camera is off</strong>
+                            <p id="recognition-result-detail">Start the camera to begin recognizing faces.</p>
+                        </div>
                     </div>
-                    <div class="recognition-overlay hidden" id="recognition-result">
-                        Looking for faces…
-                    </div>
-                    <div class="overlay-controls">
-                        <button class="overlay-btn secondary" id="recognition-camera-btn" onclick="toggleCamera()">
-                            📷 Start Camera
+
+                    <div class="recognition-actions">
+                        <button type="button" class="btn btn-primary" id="recognition-camera-btn" onclick="toggleCamera()">
+                            Start camera
                         </button>
-                        <button class="overlay-btn secondary" onclick="toggleTTS()">
-                            🔊 Audio
+                        <button type="button" class="btn btn-secondary audio-toggle" id="audio-toggle-btn" onclick="toggleTTS()" aria-pressed="false">
+                            <span id="audio-toggle-label">Audio off</span>
                         </button>
                     </div>
+
+                    <p class="privacy-note">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                            <rect x="4" y="10" width="16" height="10" rx="2"/>
+                            <path d="M8 10V7a4 4 0 0 1 8 0v3"/>
+                        </svg>
+                        Camera frames are processed locally and are not uploaded.
+                    </p>
                 </div>
             </section>
 
