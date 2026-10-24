@@ -120,7 +120,7 @@ MIT License - Feel free to use and modify for your needs.
 
 ## Acknowledgments
 
-- [face-api.js](https://github.com/justadudewhohacks/face-api.js) by Vladimir Mandic
+- [@vladmandic/face-api](https://github.com/vladmandic/face-api) by Vladimir Mandic (maintained fork of the original face-api.js)
 - TensorFlow.js team
 - Inspired by the needs of the prosopagnosia community
 

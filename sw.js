@@ -1,11 +1,14 @@
 // Service Worker for FaceHelper PWA
-const CACHE_NAME = 'facehelper-cache-v1';
+// Bump the cache version so clients pick up the new library.
+const CACHE_NAME = 'facehelper-cache-v2';
 const urlsToCache = [
     '/',
     '/index.html',
     '/app.js',
     '/manifest.json',
-    'https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js'
+    // vladmandic face-api 1.7.12 - kept consistent with index.html and the
+    // model URL loaded in app.js.
+    'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.12/dist/face-api.js'
 ];
 
 // Install event - cache resources
