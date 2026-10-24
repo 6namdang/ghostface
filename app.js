@@ -914,6 +914,15 @@ function showToast(message) {
 
 window.addEventListener('load', init);
 
+// Register the service worker (offline support + Android "Install app").
+if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js').catch((error) => {
+            console.error('Service worker registration failed:', error);
+        });
+    });
+}
+
 // Handle page visibility
 document.addEventListener('visibilitychange', () => {
     if (document.hidden && stream) {

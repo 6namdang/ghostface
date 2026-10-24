@@ -112,30 +112,15 @@ surge
 # Follow prompts - get a URL like https://random-name.surge.sh
 ```
 
-## Generating PNG Icons
+## App Icons
 
-The project includes SVG icons. To generate PNG icons:
+The PNG icons in `icons/` are committed and referenced by `manifest.json`. To regenerate them after changing the design, run (standard library only, no installs):
 
-### Option 1: Use the included generator
-1. Open `generate-icons.html` in a browser
-2. Right-click each icon and save as PNG
-3. Place in `icons/` folder with correct names (icon-72.png, icon-96.png, etc.)
-
-### Option 2: Use online converter
-- Go to https://cloudconvert.com/svg-to-png
-- Upload the SVG files
-- Set exact dimensions (72x72, 96x96, 128x128, 144x144, 152x152, 192x192, 384x384, 512x512)
-- Download and place in `icons/` folder
-
-### Option 3: Use ImageMagick
 ```bash
-# Install ImageMagick first
-cd /projects/sandbox/ghostface/icons
-
-for size in 72 96 128 144 152 192 384 512; do
-  convert icon-512.svg -resize ${size}x${size} icon-${size}.png
-done
+python3 scripts/generate_icons.py
 ```
+
+This writes the rounded `icon-<size>.png` files, the full-bleed `icon-maskable-192/512.png` (for Android adaptive icons), and `apple-touch-icon.png` (180x180, for iOS).
 
 ## Testing on Mobile
 
