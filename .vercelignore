@@ -1,0 +1,14 @@
+node_modules
+.git
+*.log
+.env
+.env.local
+.DS_Store
+Thumbs.db
+*.md
+SUMMARY.txt
+check.sh
+start.sh
+serve.js
+generate-icons.html
+PROJECT_STRUCTURE.md
