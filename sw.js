@@ -1,14 +1,13 @@
-// Service Worker for FaceHelper PWA
-// Bump the version whenever cached files change so clients pick up updates.
-const CACHE_NAME = 'facehelper-cache-v5';
+// FaceHelper service worker
+const APP_CACHE = 'facehelper-app-v7';
+const MODEL_CACHE = 'facehelper-models-v1';
+const MODEL_PREFIX = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.12/';
 
-// Only same-origin files are precached. cache.addAll() fails as a whole if any
-// one URL fails, so a CDN hiccup must not stop the worker from installing.
-// Face-api and its models are cached on first use by the fetch handler below.
 const APP_SHELL = [
     '/',
     '/index.html',
-    '/app.js',
+    '/styles.css?v=7',
+    '/app.js?v=7',
     '/manifest.json',
     '/icons/icon-192.png',
     '/icons/icon-512.png',
@@ -16,68 +15,95 @@ const APP_SHELL = [
 ];
 
 self.addEventListener('install', (event) => {
-    event.waitUntil(
-        caches.open(CACHE_NAME)
-            .then((cache) => cache.addAll(APP_SHELL))
-            .then(() => self.skipWaiting())
-            .catch((error) => {
-                console.error('Cache install error:', error);
-                return self.skipWaiting();
-            })
-    );
+    event.waitUntil((async () => {
+        // Preserve model responses from older app caches before activation
+        // retires them. Models use a stable cache across UI releases.
+        await migrateLegacyModels();
+        const cache = await caches.open(APP_CACHE);
+        await cache.addAll(APP_SHELL);
+        await self.skipWaiting();
+    })());
 });
 
 self.addEventListener('activate', (event) => {
-    event.waitUntil(
-        caches.keys()
-            .then((cacheNames) => Promise.all(
-                cacheNames
-                    .filter((cacheName) => cacheName !== CACHE_NAME)
-                    .map((cacheName) => caches.delete(cacheName))
-            ))
-            .then(() => self.clients.claim())
-    );
+    event.waitUntil((async () => {
+        const cacheNames = await caches.keys();
+        await Promise.all(cacheNames
+            .filter((name) => name !== APP_CACHE && name !== MODEL_CACHE)
+            .filter((name) => name.startsWith('facehelper-app-') || name.startsWith('facehelper-cache-'))
+            .map((name) => caches.delete(name)));
+        await self.clients.claim();
+    })());
 });
 
 self.addEventListener('fetch', (event) => {
-    if (event.request.method !== 'GET') return;
+    const { request } = event;
+    if (request.method !== 'GET') return;
 
-    const requestUrl = new URL(event.request.url);
-    if (requestUrl.origin === self.location.origin) {
-        event.respondWith(networkFirst(event.request));
-    } else {
-        event.respondWith(cacheFirst(event.request));
+    const url = new URL(request.url);
+    if (url.origin === self.location.origin) {
+        event.respondWith(request.mode === 'navigate'
+            ? networkFirst(request)
+            : staleWhileRevalidate(request));
+        return;
+    }
+
+    if (request.url.startsWith(MODEL_PREFIX)) {
+        event.respondWith(cacheFirst(request, MODEL_CACHE));
     }
 });
 
-// Fetch app files first so online users receive UI fixes immediately. If the
-// network is unavailable, fall back to the last cached version.
+async function migrateLegacyModels() {
+    const target = await caches.open(MODEL_CACHE);
+    const cacheNames = await caches.keys();
+
+    for (const name of cacheNames) {
+        if (name === MODEL_CACHE) continue;
+        const source = await caches.open(name);
+        const requests = await source.keys();
+        for (const request of requests) {
+            if (!request.url.startsWith(MODEL_PREFIX)) continue;
+            const response = await source.match(request);
+            if (response && !await target.match(request)) await target.put(request, response);
+        }
+    }
+}
+
+// Navigation stays network-first so online users receive the latest shell.
 async function networkFirst(request) {
-    const cache = await caches.open(CACHE_NAME);
+    const cache = await caches.open(APP_CACHE);
     try {
         const response = await fetch(request);
         if (response.ok) await cache.put(request, response.clone());
         return response;
     } catch (error) {
-        const cached = await cache.match(request);
-        if (cached) return cached;
-        if (request.mode === 'navigate') return cache.match('/index.html');
-        return Response.error();
+        return await cache.match(request) || await cache.match('/index.html') || Response.error();
     }
 }
 
-// CDN assets and model weights are immutable because their URLs include a
-// package version. Cache them after first use for faster repeat loads.
-async function cacheFirst(request) {
-    const cached = await caches.match(request);
+// Static UI assets paint immediately from cache while refreshing in the
+// background, avoiding a render-blocking network wait on repeat visits.
+async function staleWhileRevalidate(request) {
+    const cache = await caches.open(APP_CACHE);
+    const cached = await cache.match(request);
+    const network = fetch(request)
+        .then(async (response) => {
+            if (response.ok) await cache.put(request, response.clone());
+            return response;
+        })
+        .catch(() => null);
+
+    return cached || await network || Response.error();
+}
+
+async function cacheFirst(request, cacheName) {
+    const cache = await caches.open(cacheName);
+    const cached = await cache.match(request);
     if (cached) return cached;
 
     try {
         const response = await fetch(request);
-        if (response.ok) {
-            const cache = await caches.open(CACHE_NAME);
-            await cache.put(request, response.clone());
-        }
+        if (response.ok) await cache.put(request, response.clone());
         return response;
     } catch (error) {
         return Response.error();

@@ -9,7 +9,7 @@ A Progressive Web App designed to help people with prosopagnosia (face blindness
 - **Audio Feedback**: Optional text-to-speech to announce names
 - **Privacy-First**: All data stored locally on device - nothing uploaded to servers
 - **Offline Capable**: Works without internet after initial load
-- **Cross-Platform**: Install on iPhone and Android as a native app
+- **Cross-Platform**: Installable PWA for iPhone and Android
 
 ## How It Works 🔬
 
@@ -20,7 +20,7 @@ A Progressive Web App designed to help people with prosopagnosia (face blindness
 ## Technology Stack 🛠️
 
 - **Frontend**: Vanilla JavaScript (no framework needed for this single-purpose app)
-- **Face Detection**: [@vladmandic/face-api](https://github.com/vladmandic/face-api) (ArcFace-style recognition via TensorFlow.js)
+- **Face Detection & Recognition**: [@vladmandic/face-api](https://github.com/vladmandic/face-api), using Tiny Face Detector, 68-point landmarks, and its dlib-style 128-dimensional face descriptor model via TensorFlow.js
 - **Storage**: IndexedDB (browser-based local storage)
 - **PWA**: Service Worker for offline support
 - **Models**: TinyFaceDetector + FaceLandmark68 + FaceRecognition (7MB total)
@@ -32,13 +32,13 @@ A Progressive Web App designed to help people with prosopagnosia (face blindness
 2. Tap the Share button (square with arrow)
 3. Scroll down and tap "Add to Home Screen"
 4. Tap "Add" in the top right corner
-5. The app will appear on your home screen like a native app
+5. The app will open from your home screen in a standalone PWA window
 
 ### On Android
 1. Open Chrome and navigate to the app URL
 2. Tap the menu button (three dots)
 3. Tap "Add to Home screen" or "Install app"
-4. The app will be installed like a native app
+4. The app will open from your home screen in a standalone PWA window
 
 ## Privacy & Security 🔒
 
@@ -49,7 +49,7 @@ A Progressive Web App designed to help people with prosopagnosia (face blindness
 
 ## Recognition Threshold
 
-The app uses a conservative matching threshold (0.6 distance) to minimize false positives. It's better to say "Unknown" than to confidently misidentify someone.
+The current matcher uses face-api's default-style distance cutoff of `0.6`. This value must be validated with representative users and real lighting conditions before production use. Lower values are stricter and produce more “Unknown” results; higher values accept weaker matches.
 
 ## Tips for Best Results 💡
 
